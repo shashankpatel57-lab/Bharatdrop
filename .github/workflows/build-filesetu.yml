@@ -1,0 +1,48 @@
+name: Build FileSetu v5.4
+
+on:
+  push:
+    branches:
+      - filesetu-v5.4-rebuild
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build Android APK and AAB
+        run: gradle -p android :app:assembleRelease :app:bundleRelease --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FileSetu-Android-v5.4
+          path: |
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish Windows x64
+        shell: pwsh
+        run: dotnet publish .\desktop\FileSetuDesktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\out\desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FileSetu-Windows-v5.4
+          path: out/desktop/FileSetuDesktop.exe
+          if-no-files-found: error
