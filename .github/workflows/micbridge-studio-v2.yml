@@ -1,0 +1,34 @@
+name: Build MicBridge Studio v2.1
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Download FFmpeg
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
+          $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe not found" }
+          Copy-Item $exe.FullName "micbridge-studio/ffmpeg.exe"
+      - name: Publish single EXE
+        shell: pwsh
+        run: |
+          dotnet restore micbridge-studio/MicBridgeStudio.csproj
+          dotnet publish micbridge-studio/MicBridgeStudio.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+          Copy-Item "publish/MicBridge_Studio.exe" "MicBridge_Studio_v2.1.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MicBridge-Studio-v2.1
+          path: MicBridge_Studio_v2.1.exe
+          if-no-files-found: error
