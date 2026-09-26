@@ -1,4 +1,4 @@
-name: Build MicBridge Studio v2.1
+name: Build MicBridge Studio v2.2
 
 on:
   pull_request:
@@ -9,9 +9,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
       - name: Download FFmpeg
         shell: pwsh
         run: |
@@ -21,14 +23,43 @@ jobs:
           $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           if (-not $exe) { throw "ffmpeg.exe not found" }
           Copy-Item $exe.FullName "micbridge-studio/ffmpeg.exe"
-      - name: Publish single EXE
+
+      - name: Publish self-contained app
         shell: pwsh
         run: |
           dotnet restore micbridge-studio/MicBridgeStudio.csproj
           dotnet publish micbridge-studio/MicBridgeStudio.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
-          Copy-Item "publish/MicBridge_Studio.exe" "MicBridge_Studio_v2.1.exe"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
+          & $iscc "micbridge-studio\installer\MicBridgeStudio.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed" }
+
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $file = "micbridge-studio\installer-output\MicBridge_Studio_Setup_v2.2.exe"
+          if (-not (Test-Path $file)) { throw "Installer not created" }
+          $size = (Get-Item $file).Length
+          if ($size -lt 1000000) { throw "Installer unexpectedly small" }
+          Write-Host "Installer size: $size bytes"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: MicBridge-Studio-v2.1
-          path: MicBridge_Studio_v2.1.exe
+          name: MicBridge-Studio-v2.2-Installer
+          path: micbridge-studio/installer-output/MicBridge_Studio_Setup_v2.2.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MicBridge-Studio-v2.2-Portable
+          path: publish/MicBridge_Studio.exe
           if-no-files-found: error
