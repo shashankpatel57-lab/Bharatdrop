@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using NAudio.Dsp;
 using System.Text;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -14,6 +16,7 @@ public sealed class MainForm : Form
     private readonly PhoneReceiver phone = new();
     private readonly ComboBox modeBox = new();
     private readonly ComboBox micBox = new();
+    private readonly ComboBox profileBox = new();
     private readonly ComboBox fpsBox = new();
     private readonly NumericUpDown countdownBox = new();
     private readonly TextBox folderBox = new();
@@ -31,10 +34,11 @@ public sealed class MainForm : Form
     private Process? ffmpeg;
     private bool recording;
     private string? currentOutput;
+    private StopOverlayForm? stopOverlay;
 
     public MainForm()
     {
-        Text = "MicBridge Studio";
+        Text = "MicBridge Studio 2.1";
         Width = 760;
         Height = 700;
         MinimumSize = new Size(700, 620);
@@ -209,25 +213,39 @@ public sealed class MainForm : Form
         modeBox.SelectedIndexChanged += (_, _) => UpdateMicControlState();
         panel.Controls.Add(modeBox, 1, 0);
 
-        panel.Controls.Add(RowLabel("Other microphone"), 0, 1);
+        panel.Controls.Add(RowLabel("Voice profile"), 0, 1);
+        profileBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        profileBox.Items.AddRange(new object[]
+        {
+            "Natural",
+            "Studio Voice",
+            "Cinematic Voice",
+            "Deep Bass",
+            "Documentary Voice"
+        });
+        profileBox.SelectedIndex = 0;
+        profileBox.Dock = DockStyle.Fill;
+        panel.Controls.Add(profileBox, 1, 1);
+
+        panel.Controls.Add(RowLabel("Other microphone"), 0, 2);
         micBox.DropDownStyle = ComboBoxStyle.DropDownList;
         micBox.Dock = DockStyle.Fill;
-        panel.Controls.Add(micBox, 1, 1);
+        panel.Controls.Add(micBox, 1, 2);
 
         var refresh = new Button { Text = "Refresh microphones", AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
         refresh.Click += (_, _) => RefreshMicrophones();
-        panel.Controls.Add(refresh, 1, 2);
+        panel.Controls.Add(refresh, 1, 3);
 
         var note = new Label
         {
-            Text = "Internal sound captures the audio playing through Windows speakers/headphones. Phone mic audio is received directly over the local network.",
+            Text = "Voice profiles process only microphone audio; Windows internal sound stays natural. Natural leaves the voice essentially untouched.",
             AutoSize = true,
             MaximumSize = new Size(600, 0),
             ForeColor = Color.FromArgb(100, 116, 139),
             Margin = new Padding(0, 12, 0, 0)
         };
         panel.SetColumnSpan(note, 2);
-        panel.Controls.Add(note, 0, 3);
+        panel.Controls.Add(note, 0, 4);
         return panel;
     }
 
@@ -347,6 +365,7 @@ public sealed class MainForm : Form
     {
         bool needsOther = modeBox.SelectedIndex is 3 or 4;
         micBox.Enabled = needsOther;
+        profileBox.Enabled = modeBox.SelectedIndex != 2;
     }
 
     private async Task StartRecordingAsync()
@@ -393,7 +412,8 @@ public sealed class MainForm : Form
             string file = Path.Combine(folder, $"MicBridge_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4");
             currentOutput = file;
 
-            audioEngine = new AudioMixEngine(phone, phoneMic, selectedDevice?.Id, systemAudio, port);
+            var profile = (VoiceProfile)Math.Clamp(profileBox.SelectedIndex, 0, 4);
+            audioEngine = new AudioMixEngine(phone, phoneMic, selectedDevice?.Id, systemAudio, port, profile);
             ffmpeg = StartFfmpeg(ffmpegPath, file, fps, port);
             await Task.Delay(350);
             audioEngine.Start();
@@ -403,6 +423,7 @@ public sealed class MainForm : Form
             stopButton.Enabled = true;
             modeBox.Enabled = false;
             micBox.Enabled = false;
+            profileBox.Enabled = false;
             statusLabel.Text = $"Recording • {Path.GetFileName(file)}";
             statusLabel.ForeColor = Color.FromArgb(220, 38, 38);
             tray.Text = "MicBridge Studio — Recording";
@@ -412,6 +433,9 @@ public sealed class MainForm : Form
             {
                 WindowState = FormWindowState.Minimized;
                 Hide();
+                stopOverlay?.Close();
+                stopOverlay = new StopOverlayForm(async () => await StopRecordingAsync());
+                stopOverlay.Show();
             }
         }
         catch (Exception ex)
@@ -454,6 +478,9 @@ public sealed class MainForm : Form
             audioEngine = null;
             try { ffmpeg?.Dispose(); } catch { }
             ffmpeg = null;
+
+            try { stopOverlay?.Close(); } catch { }
+            stopOverlay = null;
 
             startButton.Enabled = true;
             stopButton.Enabled = false;
@@ -498,11 +525,15 @@ public sealed class MainForm : Form
 
         A("-map"); A("0:v:0");
         A("-map"); A("1:a:0");
-        A("-vf"); A("scale=trunc(iw/2)*2:trunc(ih/2)*2");
+        A("-vf"); A("scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos:in_range=full:out_range=tv:out_color_matrix=bt709,format=yuv420p");
         A("-c:v"); A("libx264");
         A("-preset"); A("veryfast");
         A("-crf"); A("22");
         A("-pix_fmt"); A("yuv420p");
+        A("-color_primaries"); A("bt709");
+        A("-color_trc"); A("bt709");
+        A("-colorspace"); A("bt709");
+        A("-color_range"); A("tv");
         A("-c:a"); A("aac");
         A("-b:a"); A("192k");
         A("-movflags"); A("+faststart");
@@ -704,6 +735,15 @@ internal sealed class PhoneReceiver : IDisposable
     }
 }
 
+internal enum VoiceProfile
+{
+    Natural = 0,
+    Studio = 1,
+    Cinematic = 2,
+    DeepBass = 3,
+    Documentary = 4
+}
+
 internal sealed class AudioMixEngine : IDisposable
 {
     private readonly PhoneReceiver phone;
@@ -711,6 +751,7 @@ internal sealed class AudioMixEngine : IDisposable
     private readonly string? micDeviceId;
     private readonly bool includeSystem;
     private readonly int udpPort;
+    private readonly VoiceProfile profile;
     private readonly List<IDisposable> disposables = new();
     private readonly List<WaveInEvent> legacy = new();
     private WasapiCapture? micCapture;
@@ -719,13 +760,14 @@ internal sealed class AudioMixEngine : IDisposable
     private CancellationTokenSource? cts;
     private MixingSampleProvider? mixer;
 
-    public AudioMixEngine(PhoneReceiver phone, bool includePhone, string? micDeviceId, bool includeSystem, int udpPort)
+    public AudioMixEngine(PhoneReceiver phone, bool includePhone, string? micDeviceId, bool includeSystem, int udpPort, VoiceProfile profile)
     {
         this.phone = phone;
         this.includePhone = includePhone;
         this.micDeviceId = micDeviceId;
         this.includeSystem = includeSystem;
         this.udpPort = udpPort;
+        this.profile = profile;
     }
 
     public void Start()
@@ -733,7 +775,7 @@ internal sealed class AudioMixEngine : IDisposable
         var inputs = new List<ISampleProvider>();
 
         if (includePhone)
-            inputs.Add(phone.CreateSampleProvider());
+            inputs.Add(new VoiceProfileSampleProvider(phone.CreateSampleProvider(), profile));
 
         if (!string.IsNullOrWhiteSpace(micDeviceId))
         {
@@ -742,7 +784,7 @@ internal sealed class AudioMixEngine : IDisposable
             micCapture = new WasapiCapture(device);
             var b = NewBuffer(micCapture.WaveFormat);
             micCapture.DataAvailable += (_, e) => b.AddSamples(e.Buffer, 0, e.BytesRecorded);
-            inputs.Add(ToStereo48k(b));
+            inputs.Add(new VoiceProfileSampleProvider(ToStereo48k(b), profile));
             micCapture.StartRecording();
         }
 
@@ -834,6 +876,154 @@ internal sealed class AudioMixEngine : IDisposable
         try { cts?.Dispose(); } catch { }
         foreach (var d in disposables) try { d.Dispose(); } catch { }
         foreach (var l in legacy) try { l.Dispose(); } catch { }
+    }
+}
+
+
+internal sealed class StopOverlayForm : Form
+{
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+    public StopOverlayForm(Func<Task> stopAction)
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        ShowInTaskbar = false;
+        TopMost = true;
+        Size = new Size(112, 42);
+        BackColor = Color.FromArgb(15, 23, 42);
+
+        var button = new Button
+        {
+            Dock = DockStyle.Fill,
+            Text = "■  STOP",
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(220, 38, 38),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI Semibold", 10),
+            Cursor = Cursors.Hand
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.Click += async (_, _) =>
+        {
+            button.Enabled = false;
+            button.Text = "Saving…";
+            await stopAction();
+        };
+        Controls.Add(button);
+
+        Shown += (_, _) =>
+        {
+            var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+            Location = new Point(wa.Right - Width - 16, wa.Top + 16);
+            try { SetWindowDisplayAffinity(Handle, WDA_EXCLUDEFROMCAPTURE); } catch { }
+        };
+    }
+
+    protected override bool ShowWithoutActivation => true;
+}
+
+internal sealed class VoiceProfileSampleProvider : ISampleProvider
+{
+    private readonly ISampleProvider source;
+    private readonly BiQuadFilter[][] filters;
+    private readonly float threshold;
+    private readonly float ratio;
+    private readonly float makeup;
+    private readonly float[] envelope;
+    private readonly float attack;
+    private readonly float release;
+
+    public WaveFormat WaveFormat => source.WaveFormat;
+
+    public VoiceProfileSampleProvider(ISampleProvider source, VoiceProfile profile)
+    {
+        this.source = source;
+        int sr = source.WaveFormat.SampleRate;
+        int ch = source.WaveFormat.Channels;
+        filters = new BiQuadFilter[ch][];
+        envelope = new float[ch];
+
+        (threshold, ratio, makeup, attack, release) = profile switch
+        {
+            VoiceProfile.Studio => (0.16f, 3.0f, 1.18f, 0.010f, 0.140f),
+            VoiceProfile.Cinematic => (0.20f, 2.4f, 1.10f, 0.018f, 0.220f),
+            VoiceProfile.DeepBass => (0.20f, 2.2f, 1.08f, 0.015f, 0.180f),
+            VoiceProfile.Documentary => (0.15f, 3.4f, 1.20f, 0.008f, 0.120f),
+            _ => (0.98f, 1.0f, 1.0f, 0.010f, 0.120f)
+        };
+
+        for (int c = 0; c < ch; c++)
+        {
+            filters[c] = profile switch
+            {
+                VoiceProfile.Studio => new[]
+                {
+                    BiQuadFilter.HighPassFilter(sr, 75, 0.707f),
+                    BiQuadFilter.PeakingEQ(sr, 220, 0.9f, -1.5f),
+                    BiQuadFilter.PeakingEQ(sr, 3000, 1.0f, 2.5f)
+                },
+                VoiceProfile.Cinematic => new[]
+                {
+                    BiQuadFilter.HighPassFilter(sr, 55, 0.707f),
+                    BiQuadFilter.PeakingEQ(sr, 120, 0.8f, 2.5f),
+                    BiQuadFilter.PeakingEQ(sr, 2500, 1.0f, 1.4f)
+                },
+                VoiceProfile.DeepBass => new[]
+                {
+                    BiQuadFilter.HighPassFilter(sr, 40, 0.707f),
+                    BiQuadFilter.PeakingEQ(sr, 110, 0.75f, 5.0f),
+                    BiQuadFilter.PeakingEQ(sr, 220, 0.9f, 1.5f),
+                    BiQuadFilter.PeakingEQ(sr, 3500, 1.0f, 0.8f)
+                },
+                VoiceProfile.Documentary => new[]
+                {
+                    BiQuadFilter.HighPassFilter(sr, 85, 0.707f),
+                    BiQuadFilter.PeakingEQ(sr, 250, 0.9f, -2.5f),
+                    BiQuadFilter.PeakingEQ(sr, 2200, 0.9f, 2.5f),
+                    BiQuadFilter.PeakingEQ(sr, 4500, 1.0f, 2.0f)
+                },
+                _ => Array.Empty<BiQuadFilter>()
+            };
+        }
+    }
+
+    public int Read(float[] buffer, int offset, int count)
+    {
+        int read = source.Read(buffer, offset, count);
+        int ch = WaveFormat.Channels;
+        int sr = WaveFormat.SampleRate;
+        float attackCoef = MathF.Exp(-1f / (Math.Max(0.001f, attack) * sr));
+        float releaseCoef = MathF.Exp(-1f / (Math.Max(0.001f, release) * sr));
+
+        for (int i = 0; i < read; i++)
+        {
+            int c = i % ch;
+            float x = buffer[offset + i];
+
+            foreach (var f in filters[c])
+                x = f.Transform(x);
+
+            if (ratio > 1.01f)
+            {
+                float a = MathF.Abs(x);
+                float coef = a > envelope[c] ? attackCoef : releaseCoef;
+                envelope[c] = coef * envelope[c] + (1 - coef) * a;
+                float gain = 1f;
+                if (envelope[c] > threshold)
+                {
+                    float compressed = threshold + (envelope[c] - threshold) / ratio;
+                    gain = compressed / Math.Max(envelope[c], 0.000001f);
+                }
+                x *= gain * makeup;
+            }
+
+            buffer[offset + i] = Math.Clamp(x, -0.98f, 0.98f);
+        }
+        return read;
     }
 }
 
