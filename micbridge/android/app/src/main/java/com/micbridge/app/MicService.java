@@ -54,7 +54,7 @@ public class MicService extends Service {
                 record=new AudioRecord.Builder().setAudioSource(source)
                         .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                                 .setSampleRate(RATE).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build())
-                        .setBufferSizeInBytes(bufferSize).setPerformanceMode(AudioRecord.PERFORMANCE_MODE_LOW_LATENCY).build();
+                        .setBufferSizeInBytes(bufferSize).build();
 
                 int session=record.getAudioSessionId();
                 if(useNs && NoiseSuppressor.isAvailable()){ns=NoiseSuppressor.create(session);if(ns!=null)ns.setEnabled(true);}
