@@ -1,10 +1,11 @@
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using NAudio.Dsp;
 using System.Text;
+using NAudio.Dsp;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -26,6 +27,8 @@ public sealed class MainForm : Form
     private readonly ProgressBar meter = new();
     private readonly Button startButton = new();
     private readonly Button stopButton = new();
+    private readonly Button openFolderButton = new();
+    private readonly FlowLayoutPanel recentPanel = new();
     private readonly NotifyIcon tray;
     private readonly System.Windows.Forms.Timer uiTimer = new();
     private readonly List<DeviceItem> microphones = new();
@@ -36,15 +39,27 @@ public sealed class MainForm : Form
     private string? currentOutput;
     private StopOverlayForm? stopOverlay;
 
+    private static readonly Color Bg = Color.FromArgb(243, 246, 250);
+    private static readonly Color Surface = Color.White;
+    private static readonly Color Ink = Color.FromArgb(25, 32, 43);
+    private static readonly Color Muted = Color.FromArgb(94, 105, 122);
+    private static readonly Color Accent = Color.FromArgb(0, 95, 184);
+    private static readonly Color AccentHover = Color.FromArgb(0, 84, 163);
+    private static readonly Color Border = Color.FromArgb(223, 228, 235);
+    private static readonly Color Success = Color.FromArgb(16, 124, 16);
+    private static readonly Color Danger = Color.FromArgb(196, 43, 28);
+
     public MainForm()
     {
-        Text = "MicBridge Studio 2.1";
-        Width = 760;
-        Height = 700;
-        MinimumSize = new Size(700, 620);
+        Text = "MicBridge Studio";
+        Width = 1040;
+        Height = 780;
+        MinimumSize = new Size(900, 680);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(245, 247, 251);
-        Font = new Font("Segoe UI", 10F);
+        BackColor = Bg;
+        Font = new Font("Segoe UI Variable Text", 10F);
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         BuildUi();
 
         tray = new NotifyIcon
@@ -53,9 +68,11 @@ public sealed class MainForm : Form
             Text = "MicBridge Studio",
             Visible = true
         };
+
         var trayMenu = new ContextMenuStrip();
-        trayMenu.Items.Add("Show", null, (_, _) => ShowFromTray());
+        trayMenu.Items.Add("Open MicBridge Studio", null, (_, _) => ShowFromTray());
         trayMenu.Items.Add("Stop recording", null, async (_, _) => await StopRecordingAsync());
+        trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Exit", null, async (_, _) =>
         {
             if (recording) await StopRecordingAsync();
@@ -67,9 +84,10 @@ public sealed class MainForm : Form
 
         Load += (_, _) =>
         {
-            RefreshMicrophones();
-            phone.Start();
             folderBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "MicBridge Recordings");
+            RefreshMicrophones();
+            RefreshRecentRecordings();
+            phone.Start();
         };
 
         FormClosing += async (_, e) =>
@@ -78,7 +96,7 @@ public sealed class MainForm : Form
             {
                 e.Cancel = true;
                 await StopRecordingAsync();
-                Close();
+                BeginInvoke(Close);
                 return;
             }
             phone.Dispose();
@@ -89,9 +107,9 @@ public sealed class MainForm : Form
         uiTimer.Tick += (_, _) =>
         {
             phoneLabel.Text = phone.IsConnected
-                ? $"Phone mic: connected • {phone.LastDeviceName}"
-                : "Phone mic: waiting for Android app…";
-            phoneLabel.ForeColor = phone.IsConnected ? Color.FromArgb(22, 163, 74) : Color.FromArgb(100, 116, 139);
+                ? $"Connected • {phone.LastDeviceName}"
+                : "Waiting for phone…";
+            phoneLabel.ForeColor = phone.IsConnected ? Success : Muted;
             meter.Value = Math.Clamp((int)(phone.Level * 100), 0, 100);
         };
         uiTimer.Start();
@@ -102,91 +120,187 @@ public sealed class MainForm : Form
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(28),
             ColumnCount = 1,
-            RowCount = 10,
-            AutoScroll = true
+            RowCount = 3,
+            BackColor = Bg
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
         Controls.Add(root);
+
+        root.Controls.Add(BuildHeader(), 0, 0);
+        root.Controls.Add(BuildWorkspace(), 0, 1);
+        root.Controls.Add(BuildCommandBar(), 0, 2);
+    }
+
+    private Control BuildHeader()
+    {
+        var panel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Surface,
+            Padding = new Padding(28, 20, 28, 16)
+        };
 
         var title = new Label
         {
             Text = "MicBridge Studio",
-            Font = new Font("Segoe UI Semibold", 26),
-            ForeColor = Color.FromArgb(15, 23, 42),
-            AutoSize = true
+            Font = new Font("Segoe UI Variable Display Semibold", 25F),
+            ForeColor = Ink,
+            AutoSize = true,
+            Location = new Point(28, 18)
         };
-        root.Controls.Add(title);
+        panel.Controls.Add(title);
 
         var subtitle = new Label
         {
-            Text = "Record your whole Windows screen with phone mic, another microphone, system audio, or any combination.",
-            ForeColor = Color.FromArgb(71, 85, 105),
+            Text = "Screen recording with your phone microphone, Windows audio and local microphones",
+            Font = new Font("Segoe UI Variable Text", 10.5F),
+            ForeColor = Muted,
             AutoSize = true,
-            Margin = new Padding(0, 4, 0, 18)
+            Location = new Point(31, 63)
         };
-        root.Controls.Add(subtitle);
+        panel.Controls.Add(subtitle);
 
-        root.Controls.Add(MakeCard("PHONE MICROPHONE", BuildPhonePanel()));
-        root.Controls.Add(MakeCard("RECORDING AUDIO", BuildAudioPanel()));
-        root.Controls.Add(MakeCard("SCREEN RECORDING", BuildVideoPanel()));
-        root.Controls.Add(MakeCard("SAVE LOCATION", BuildFolderPanel()));
-
-        statusLabel.Text = "Ready";
-        statusLabel.ForeColor = Color.FromArgb(71, 85, 105);
-        statusLabel.AutoSize = true;
-        statusLabel.Margin = new Padding(2, 18, 2, 8);
-        root.Controls.Add(statusLabel);
-
-        var buttons = new FlowLayoutPanel
+        var badge = new Label
         {
-            Dock = DockStyle.Top,
+            Text = "  v2.2  ",
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false
+            BackColor = Color.FromArgb(232, 242, 252),
+            ForeColor = Accent,
+            Font = new Font("Segoe UI Semibold", 9F),
+            Padding = new Padding(6, 4, 6, 4),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
         };
-        startButton.Text = "Start Recording";
-        startButton.Height = 48;
-        startButton.Width = 190;
-        startButton.BackColor = Color.FromArgb(37, 99, 235);
-        startButton.ForeColor = Color.White;
-        startButton.FlatStyle = FlatStyle.Flat;
-        startButton.FlatAppearance.BorderSize = 0;
+        badge.Location = new Point(panel.Width - badge.Width - 28, 26);
+        panel.Resize += (_, _) => badge.Location = new Point(panel.ClientSize.Width - badge.Width - 28, 27);
+        panel.Controls.Add(badge);
+
+        var line = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Border };
+        panel.Controls.Add(line);
+        return panel;
+    }
+
+    private Control BuildWorkspace()
+    {
+        var body = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(24, 20, 24, 16),
+            BackColor = Bg
+        };
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
+
+        var left = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(0, 0, 9, 0),
+            BackColor = Bg
+        };
+
+        var right = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(9, 0, 0, 0),
+            BackColor = Bg
+        };
+
+        left.Controls.Add(MakeCard("Phone microphone", "Connect your Android phone over the same Wi-Fi or hotspot.", BuildPhonePanel(), 470));
+        left.Controls.Add(MakeCard("Audio", "Choose what gets recorded and how microphone voice is processed.", BuildAudioPanel(), 470));
+
+        right.Controls.Add(MakeCard("Screen", "Record the complete Windows desktop.", BuildVideoPanel(), 390));
+        right.Controls.Add(MakeCard("Recent recordings", "Your five most recent MicBridge videos.", BuildRecentPanel(), 390));
+
+        body.Controls.Add(left, 0, 0);
+        body.Controls.Add(right, 1, 0);
+        return body;
+    }
+
+    private Control BuildCommandBar()
+    {
+        var bar = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Surface,
+            Padding = new Padding(28, 17, 28, 16)
+        };
+        bar.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Border });
+
+        statusLabel.Text = "Ready to record";
+        statusLabel.ForeColor = Muted;
+        statusLabel.AutoSize = true;
+        statusLabel.Location = new Point(29, 19);
+        statusLabel.Font = new Font("Segoe UI Variable Text", 10F);
+        bar.Controls.Add(statusLabel);
+
+        startButton.Text = "●  Start recording";
+        startButton.Size = new Size(210, 50);
+        startButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        startButton.Location = new Point(bar.Width - 238, 22);
+        StylePrimaryButton(startButton);
         startButton.Click += async (_, _) => await StartRecordingAsync();
+        bar.Resize += (_, _) => startButton.Location = new Point(bar.ClientSize.Width - 238, 22);
+        bar.Controls.Add(startButton);
 
-        stopButton.Text = "Stop";
-        stopButton.Height = 48;
-        stopButton.Width = 110;
+        stopButton.Text = "■  Stop";
+        stopButton.Size = new Size(110, 50);
         stopButton.Enabled = false;
+        stopButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        stopButton.Location = new Point(bar.Width - 356, 22);
+        StyleSecondaryButton(stopButton);
         stopButton.Click += async (_, _) => await StopRecordingAsync();
+        bar.Resize += (_, _) => stopButton.Location = new Point(bar.ClientSize.Width - 356, 22);
+        bar.Controls.Add(stopButton);
 
-        buttons.Controls.Add(startButton);
-        buttons.Controls.Add(stopButton);
-        root.Controls.Add(buttons);
+        return bar;
     }
 
     private Control BuildPhonePanel()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1 };
-        phoneLabel.Text = "Phone mic: waiting for Android app…";
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, BackColor = Surface };
+
+        var connectionRow = new Panel { Height = 38, Dock = DockStyle.Top, BackColor = Surface };
+        var dot = new Label
+        {
+            Text = "●",
+            AutoSize = true,
+            ForeColor = Color.FromArgb(148, 163, 184),
+            Font = new Font("Segoe UI", 10F),
+            Location = new Point(0, 7)
+        };
+        connectionRow.Controls.Add(dot);
+
+        phoneLabel.Text = "Waiting for phone…";
         phoneLabel.AutoSize = true;
-        phoneLabel.Margin = new Padding(0, 6, 0, 8);
-        panel.Controls.Add(phoneLabel);
+        phoneLabel.Location = new Point(22, 7);
+        phoneLabel.ForeColor = Muted;
+        connectionRow.Controls.Add(phoneLabel);
+        panel.Controls.Add(connectionRow);
 
         meter.Minimum = 0;
         meter.Maximum = 100;
-        meter.Height = 12;
+        meter.Height = 8;
         meter.Dock = DockStyle.Top;
+        meter.Margin = new Padding(0, 4, 0, 10);
         panel.Controls.Add(meter);
 
         var tip = new Label
         {
-            Text = "Keep the phone and PC on the same Wi-Fi, or connect the PC to the phone hotspot. Start the microphone from the Android MicBridge app.",
-            ForeColor = Color.FromArgb(100, 116, 139),
+            Text = "Open MicBridge on Android and tap Start Microphone. Automatic discovery works on the same Wi-Fi or when the PC uses the phone hotspot.",
+            ForeColor = Muted,
             AutoSize = true,
-            MaximumSize = new Size(620, 0),
-            Margin = new Padding(0, 10, 0, 0)
+            MaximumSize = new Size(410, 0),
+            Margin = new Padding(0, 8, 0, 0)
         };
         panel.Controls.Add(tip);
         return panel;
@@ -194,11 +308,11 @@ public sealed class MainForm : Form
 
     private Control BuildAudioPanel()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Surface };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 155));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        panel.Controls.Add(RowLabel("Audio mode"), 0, 0);
+        panel.Controls.Add(RowLabel("Audio source"), 0, 0);
         modeBox.DropDownStyle = ComboBoxStyle.DropDownList;
         modeBox.Items.AddRange(new object[]
         {
@@ -210,38 +324,35 @@ public sealed class MainForm : Form
         });
         modeBox.SelectedIndex = 1;
         modeBox.Dock = DockStyle.Fill;
+        modeBox.Margin = new Padding(0, 2, 0, 8);
         modeBox.SelectedIndexChanged += (_, _) => UpdateMicControlState();
         panel.Controls.Add(modeBox, 1, 0);
 
-        panel.Controls.Add(RowLabel("Voice profile"), 0, 1);
+        panel.Controls.Add(RowLabel("Voice style"), 0, 1);
         profileBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        profileBox.Items.AddRange(new object[]
-        {
-            "Natural",
-            "Studio Voice",
-            "Cinematic Voice",
-            "Deep Bass",
-            "Documentary Voice"
-        });
+        profileBox.Items.AddRange(new object[] { "Natural", "Studio Voice", "Cinematic Voice", "Deep Bass", "Documentary Voice" });
         profileBox.SelectedIndex = 0;
         profileBox.Dock = DockStyle.Fill;
+        profileBox.Margin = new Padding(0, 2, 0, 8);
         panel.Controls.Add(profileBox, 1, 1);
 
-        panel.Controls.Add(RowLabel("Other microphone"), 0, 2);
+        panel.Controls.Add(RowLabel("Other mic"), 0, 2);
         micBox.DropDownStyle = ComboBoxStyle.DropDownList;
         micBox.Dock = DockStyle.Fill;
+        micBox.Margin = new Padding(0, 2, 0, 8);
         panel.Controls.Add(micBox, 1, 2);
 
-        var refresh = new Button { Text = "Refresh microphones", AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+        var refresh = new Button { Text = "Refresh microphones", AutoSize = true, Height = 34, Margin = new Padding(0, 4, 0, 0) };
+        StyleSecondaryButton(refresh);
         refresh.Click += (_, _) => RefreshMicrophones();
         panel.Controls.Add(refresh, 1, 3);
 
         var note = new Label
         {
-            Text = "Voice profiles process only microphone audio; Windows internal sound stays natural. Natural leaves the voice essentially untouched.",
+            Text = "Voice styles affect microphone audio only. Internal/system audio stays natural.",
             AutoSize = true,
-            MaximumSize = new Size(600, 0),
-            ForeColor = Color.FromArgb(100, 116, 139),
+            MaximumSize = new Size(410, 0),
+            ForeColor = Muted,
             Margin = new Padding(0, 12, 0, 0)
         };
         panel.SetColumnSpan(note, 2);
@@ -251,83 +362,155 @@ public sealed class MainForm : Form
 
     private Control BuildVideoPanel()
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Surface };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         panel.Controls.Add(RowLabel("Capture"), 0, 0);
-        panel.Controls.Add(new Label { Text = "Whole desktop / full screen", AutoSize = true, Padding = new Padding(0, 7, 0, 0) }, 1, 0);
+        var capture = new Label
+        {
+            Text = "Entire desktop",
+            AutoSize = true,
+            ForeColor = Ink,
+            Padding = new Padding(0, 7, 0, 0)
+        };
+        panel.Controls.Add(capture, 1, 0);
 
         panel.Controls.Add(RowLabel("Frame rate"), 0, 1);
         fpsBox.DropDownStyle = ComboBoxStyle.DropDownList;
         fpsBox.Items.AddRange(new object[] { "30 FPS", "60 FPS" });
         fpsBox.SelectedIndex = 0;
         fpsBox.Dock = DockStyle.Fill;
+        fpsBox.Margin = new Padding(0, 2, 0, 8);
         panel.Controls.Add(fpsBox, 1, 1);
 
         panel.Controls.Add(RowLabel("Countdown"), 0, 2);
         countdownBox.Minimum = 0;
         countdownBox.Maximum = 10;
         countdownBox.Value = 3;
-        countdownBox.Dock = DockStyle.Left;
+        countdownBox.Width = 90;
+        countdownBox.Margin = new Padding(0, 2, 0, 8);
         panel.Controls.Add(countdownBox, 1, 2);
 
-        minimizeBox.Text = "Minimize MicBridge Studio when recording starts";
+        minimizeBox.Text = "Hide the main window while recording";
         minimizeBox.Checked = true;
         minimizeBox.AutoSize = true;
-        minimizeBox.Margin = new Padding(0, 10, 0, 0);
+        minimizeBox.ForeColor = Ink;
+        minimizeBox.Margin = new Padding(0, 12, 0, 4);
         panel.SetColumnSpan(minimizeBox, 2);
         panel.Controls.Add(minimizeBox, 0, 3);
-        return panel;
-    }
 
-    private Control BuildFolderPanel()
-    {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-        folderBox.Dock = DockStyle.Fill;
-        panel.Controls.Add(folderBox, 0, 0);
-
-        var browse = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(8, 0, 0, 0) };
-        browse.Click += (_, _) =>
+        var overlayNote = new Label
         {
-            using var dlg = new FolderBrowserDialog();
-            dlg.SelectedPath = Directory.Exists(folderBox.Text) ? folderBox.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-            if (dlg.ShowDialog(this) == DialogResult.OK) folderBox.Text = dlg.SelectedPath;
+            Text = "A small floating Stop control remains available at the top-right while recording.",
+            AutoSize = true,
+            MaximumSize = new Size(340, 0),
+            ForeColor = Muted,
+            Margin = new Padding(0, 6, 0, 0)
         };
-        panel.Controls.Add(browse, 1, 0);
+        panel.SetColumnSpan(overlayNote, 2);
+        panel.Controls.Add(overlayNote, 0, 4);
+
+        var saveLabel = new Label
+        {
+            Text = "Save to",
+            AutoSize = true,
+            ForeColor = Muted,
+            Margin = new Padding(0, 16, 0, 6)
+        };
+        panel.SetColumnSpan(saveLabel, 2);
+        panel.Controls.Add(saveLabel, 0, 5);
+
+        var folderEditor = BuildFolderEditor();
+        panel.SetColumnSpan(folderEditor, 2);
+        panel.Controls.Add(folderEditor, 0, 6);
+
         return panel;
     }
 
-    private static Control MakeCard(string heading, Control content)
+    private Control BuildRecentPanel()
     {
-        var card = new Panel
+        var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            Padding = new Padding(18),
-            BackColor = Color.White,
-            Margin = new Padding(0, 0, 0, 14)
+            ColumnCount = 1,
+            BackColor = Surface
         };
+
+        recentPanel.FlowDirection = FlowDirection.TopDown;
+        recentPanel.WrapContents = false;
+        recentPanel.AutoSize = true;
+        recentPanel.Dock = DockStyle.Top;
+        recentPanel.BackColor = Surface;
+        panel.Controls.Add(recentPanel);
+
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = new Padding(0, 12, 0, 0)
+        };
+
+        openFolderButton.Text = "Open recordings folder";
+        openFolderButton.AutoSize = true;
+        openFolderButton.Height = 36;
+        StyleSecondaryButton(openFolderButton);
+        openFolderButton.Click += (_, _) => OpenRecordingsFolder();
+        actions.Controls.Add(openFolderButton);
+
+        var refresh = new Button { Text = "Refresh", AutoSize = true, Height = 36 };
+        StyleSecondaryButton(refresh);
+        refresh.Click += (_, _) => RefreshRecentRecordings();
+        actions.Controls.Add(refresh);
+
+        panel.Controls.Add(actions);
+        return panel;
+    }
+
+    private static Control MakeCard(string title, string description, Control content, int width)
+    {
+        var card = new FluentCard
+        {
+            Width = width,
+            AutoSize = true,
+            Padding = new Padding(20),
+            Margin = new Padding(0, 0, 0, 16),
+            BackColor = Surface
+        };
+
         var flow = new FlowLayoutPanel
         {
-            Dock = DockStyle.Top,
+            Width = width - 40,
             AutoSize = true,
             FlowDirection = FlowDirection.TopDown,
-            WrapContents = false
+            WrapContents = false,
+            BackColor = Surface
         };
+
         var h = new Label
         {
-            Text = heading,
+            Text = title,
             AutoSize = true,
-            Font = new Font("Segoe UI Semibold", 9),
-            ForeColor = Color.FromArgb(100, 116, 139),
-            Margin = new Padding(0, 0, 0, 8)
+            Font = new Font("Segoe UI Variable Display Semibold", 14F),
+            ForeColor = Ink,
+            Margin = new Padding(0, 0, 0, 3)
         };
-        content.Width = 630;
+        var d = new Label
+        {
+            Text = description,
+            AutoSize = true,
+            MaximumSize = new Size(width - 48, 0),
+            Font = new Font("Segoe UI Variable Text", 9.5F),
+            ForeColor = Muted,
+            Margin = new Padding(0, 0, 0, 16)
+        };
+
+        content.Width = width - 40;
+        content.Margin = new Padding(0);
         flow.Controls.Add(h);
+        flow.Controls.Add(d);
         flow.Controls.Add(content);
         card.Controls.Add(flow);
         return card;
@@ -337,10 +520,33 @@ public sealed class MainForm : Form
     {
         Text = text,
         AutoSize = true,
-        ForeColor = Color.FromArgb(51, 65, 85),
+        ForeColor = Muted,
         Padding = new Padding(0, 7, 0, 0),
-        Margin = new Padding(0, 4, 10, 8)
+        Margin = new Padding(0, 2, 10, 8)
     };
+
+    private static void StylePrimaryButton(Button button)
+    {
+        button.BackColor = Accent;
+        button.ForeColor = Color.White;
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderSize = 0;
+        button.Font = new Font("Segoe UI Variable Text Semibold", 10.5F);
+        button.Cursor = Cursors.Hand;
+        button.MouseEnter += (_, _) => { if (button.Enabled) button.BackColor = AccentHover; };
+        button.MouseLeave += (_, _) => { if (button.Enabled) button.BackColor = Accent; };
+    }
+
+    private static void StyleSecondaryButton(Button button)
+    {
+        button.BackColor = Surface;
+        button.ForeColor = Ink;
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = Border;
+        button.FlatAppearance.BorderSize = 1;
+        button.Font = new Font("Segoe UI Variable Text", 9.5F);
+        button.Cursor = Cursors.Hand;
+    }
 
     private void RefreshMicrophones()
     {
@@ -364,8 +570,180 @@ public sealed class MainForm : Form
     private void UpdateMicControlState()
     {
         bool needsOther = modeBox.SelectedIndex is 3 or 4;
-        micBox.Enabled = needsOther;
-        profileBox.Enabled = modeBox.SelectedIndex != 2;
+        micBox.Enabled = needsOther && !recording;
+        profileBox.Enabled = modeBox.SelectedIndex != 2 && !recording;
+    }
+
+    private string GetRecordingFolder()
+    {
+        string folder = folderBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(folder))
+            folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "MicBridge Recordings");
+        return folder;
+    }
+
+    private void RefreshRecentRecordings()
+    {
+        recentPanel.Controls.Clear();
+        string folder = GetRecordingFolder();
+
+        if (!Directory.Exists(folder))
+        {
+            recentPanel.Controls.Add(new Label
+            {
+                Text = "No recordings yet",
+                AutoSize = true,
+                ForeColor = Muted,
+                Margin = new Padding(0, 4, 0, 8)
+            });
+            return;
+        }
+
+        FileInfo[] files;
+        try
+        {
+            files = new DirectoryInfo(folder)
+                .GetFiles("*.mp4")
+                .OrderByDescending(x => x.LastWriteTime)
+                .Take(5)
+                .ToArray();
+        }
+        catch
+        {
+            files = Array.Empty<FileInfo>();
+        }
+
+        if (files.Length == 0)
+        {
+            recentPanel.Controls.Add(new Label
+            {
+                Text = "No recordings yet",
+                AutoSize = true,
+                ForeColor = Muted,
+                Margin = new Padding(0, 4, 0, 8)
+            });
+            return;
+        }
+
+        foreach (var file in files)
+            recentPanel.Controls.Add(BuildRecentRow(file));
+    }
+
+    private Control BuildRecentRow(FileInfo file)
+    {
+        var row = new Panel
+        {
+            Width = 342,
+            Height = 56,
+            BackColor = Color.FromArgb(248, 250, 252),
+            Margin = new Padding(0, 0, 0, 7),
+            Cursor = Cursors.Hand
+        };
+
+        var name = new Label
+        {
+            Text = file.Name,
+            AutoEllipsis = true,
+            Width = 245,
+            Height = 23,
+            Location = new Point(12, 7),
+            ForeColor = Ink,
+            Font = new Font("Segoe UI Variable Text Semibold", 9.2F),
+            Cursor = Cursors.Hand
+        };
+
+        var meta = new Label
+        {
+            Text = $"{file.LastWriteTime:dd MMM, hh:mm tt}  •  {Math.Max(1, file.Length / 1024 / 1024)} MB",
+            AutoSize = true,
+            Location = new Point(12, 31),
+            ForeColor = Muted,
+            Font = new Font("Segoe UI Variable Text", 8.5F),
+            Cursor = Cursors.Hand
+        };
+
+        var open = new Button
+        {
+            Text = "▶",
+            Size = new Size(42, 36),
+            Location = new Point(292, 10),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Surface,
+            ForeColor = Accent,
+            Cursor = Cursors.Hand
+        };
+        open.FlatAppearance.BorderColor = Border;
+        open.FlatAppearance.BorderSize = 1;
+
+        void Launch(object? _, EventArgs __) => OpenRecording(file.FullName);
+        row.Click += Launch;
+        name.Click += Launch;
+        meta.Click += Launch;
+        open.Click += Launch;
+
+        row.Controls.Add(name);
+        row.Controls.Add(meta);
+        row.Controls.Add(open);
+        return row;
+    }
+
+    private void OpenRecording(string path)
+    {
+        if (!File.Exists(path))
+        {
+            RefreshRecentRecordings();
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Could not open recording", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void OpenRecordingsFolder()
+    {
+        string folder = GetRecordingFolder();
+        try
+        {
+            Directory.CreateDirectory(folder);
+            Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Could not open folder", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private Control BuildFolderEditor()
+    {
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Surface };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        folderBox.Dock = DockStyle.Fill;
+        folderBox.Margin = new Padding(0, 0, 8, 0);
+        folderBox.Leave += (_, _) => RefreshRecentRecordings();
+        panel.Controls.Add(folderBox, 0, 0);
+
+        var browse = new Button { Text = "Browse…", AutoSize = true, Height = 34 };
+        StyleSecondaryButton(browse);
+        browse.Click += (_, _) =>
+        {
+            using var dlg = new FolderBrowserDialog();
+            dlg.SelectedPath = Directory.Exists(GetRecordingFolder()) ? GetRecordingFolder() : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+            {
+                folderBox.Text = dlg.SelectedPath;
+                RefreshRecentRecordings();
+            }
+        };
+        panel.Controls.Add(browse, 1, 0);
+        return panel;
     }
 
     private async Task StartRecordingAsync()
@@ -397,8 +775,7 @@ public sealed class MainForm : Form
             }
         }
 
-        string folder = folderBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(folder)) return;
+        string folder = GetRecordingFolder();
         Directory.CreateDirectory(folder);
 
         int countdown = (int)countdownBox.Value;
@@ -420,14 +797,16 @@ public sealed class MainForm : Form
 
             recording = true;
             startButton.Enabled = false;
+            startButton.Text = "Recording…";
             stopButton.Enabled = true;
             modeBox.Enabled = false;
             micBox.Enabled = false;
             profileBox.Enabled = false;
+            fpsBox.Enabled = false;
+            countdownBox.Enabled = false;
             statusLabel.Text = $"Recording • {Path.GetFileName(file)}";
-            statusLabel.ForeColor = Color.FromArgb(220, 38, 38);
+            statusLabel.ForeColor = Danger;
             tray.Text = "MicBridge Studio — Recording";
-            tray.ShowBalloonTip(1500, "MicBridge Studio", "Screen recording started.", ToolTipIcon.Info);
 
             if (minimizeBox.Checked)
             {
@@ -444,6 +823,8 @@ public sealed class MainForm : Form
             audioEngine = null;
             try { if (ffmpeg is { HasExited: false }) ffmpeg.Kill(true); } catch { }
             ffmpeg = null;
+            startButton.Enabled = true;
+            startButton.Text = "●  Start recording";
             MessageBox.Show(this, ex.Message, "Could not start recording", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -453,7 +834,9 @@ public sealed class MainForm : Form
         if (!recording) return;
 
         recording = false;
-        statusLabel.Text = "Finishing recording…";
+        statusLabel.Text = "Saving recording…";
+        statusLabel.ForeColor = Muted;
+
         try
         {
             if (ffmpeg is { HasExited: false })
@@ -483,16 +866,23 @@ public sealed class MainForm : Form
             stopOverlay = null;
 
             startButton.Enabled = true;
+            startButton.Text = "●  Start recording";
             stopButton.Enabled = false;
             modeBox.Enabled = true;
+            fpsBox.Enabled = true;
+            countdownBox.Enabled = true;
             UpdateMicControlState();
-            statusLabel.Text = currentOutput is null ? "Ready" : $"Saved: {currentOutput}";
-            statusLabel.ForeColor = Color.FromArgb(22, 163, 74);
+
+            statusLabel.Text = currentOutput is null ? "Ready to record" : $"Saved • {Path.GetFileName(currentOutput)} • Ready for another recording";
+            statusLabel.ForeColor = currentOutput is null ? Muted : Success;
             tray.Text = "MicBridge Studio";
+
             ShowFromTray();
+            RefreshRecentRecordings();
+            startButton.Focus();
 
             if (currentOutput is not null)
-                tray.ShowBalloonTip(1800, "Recording saved", currentOutput, ToolTipIcon.Info);
+                tray.ShowBalloonTip(1600, "Recording saved", Path.GetFileName(currentOutput), ToolTipIcon.Info);
         }
     }
 
@@ -579,7 +969,7 @@ public sealed class MainForm : Form
             StartPosition = FormStartPosition.CenterScreen,
             Size = new Size(300, 220),
             TopMost = true,
-            BackColor = Color.FromArgb(15, 23, 42),
+            BackColor = Color.FromArgb(17, 24, 39),
             ShowInTaskbar = false
         };
         var l = new Label
@@ -587,19 +977,21 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleCenter,
             ForeColor = Color.White,
-            Font = new Font("Segoe UI Semibold", 72)
+            Font = new Font("Segoe UI Variable Display Semibold", 72)
         };
         f.Controls.Add(l);
         f.Show();
+
         for (int i = seconds; i >= 1; i--)
         {
             l.Text = i.ToString();
             l.Refresh();
             await Task.Delay(700);
         }
+
         l.Text = "REC";
-        l.Font = new Font("Segoe UI Semibold", 46);
-        l.ForeColor = Color.FromArgb(248, 113, 113);
+        l.Font = new Font("Segoe UI Variable Display Semibold", 42);
+        l.ForeColor = Color.FromArgb(255, 99, 99);
         l.Refresh();
         await Task.Delay(450);
         f.Close();
@@ -615,6 +1007,44 @@ public sealed class MainForm : Form
     private sealed record DeviceItem(string Id, string Name)
     {
         public override string ToString() => Name;
+    }
+}
+
+internal sealed class FluentCard : Panel
+{
+    public FluentCard()
+    {
+        DoubleBuffered = true;
+        ResizeRedraw = true;
+        BackColor = Color.White;
+    }
+
+    protected override void OnResize(EventArgs eventargs)
+    {
+        base.OnResize(eventargs);
+        using var path = RoundedRect(ClientRectangle, 12);
+        Region = new Region(path);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = RoundedRect(new Rectangle(0, 0, Width - 1, Height - 1), 12);
+        using var pen = new Pen(Color.FromArgb(220, 226, 234), 1);
+        e.Graphics.DrawPath(pen, path);
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle bounds, int radius)
+    {
+        int d = radius * 2;
+        var p = new GraphicsPath();
+        p.AddArc(bounds.Left, bounds.Top, d, d, 180, 90);
+        p.AddArc(bounds.Right - d, bounds.Top, d, d, 270, 90);
+        p.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        p.AddArc(bounds.Left, bounds.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 }
 
