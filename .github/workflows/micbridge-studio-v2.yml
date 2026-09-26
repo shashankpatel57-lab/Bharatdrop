@@ -1,4 +1,4 @@
-name: Build MicBridge Studio v2
+name: Build MicBridge Studio v2.1
 
 on:
   pull_request:
@@ -26,9 +26,9 @@ jobs:
         run: |
           dotnet restore micbridge-studio/MicBridgeStudio.csproj
           dotnet publish micbridge-studio/MicBridgeStudio.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
-          Copy-Item "publish/MicBridge_Studio.exe" "MicBridge_Studio_v2.0.exe"
+          Copy-Item "publish/MicBridge_Studio.exe" "MicBridge_Studio_v2.1.exe"
       - uses: actions/upload-artifact@v4
         with:
-          name: MicBridge-Studio-v2
-          path: MicBridge_Studio_v2.0.exe
+          name: MicBridge-Studio-v2.1
+          path: MicBridge_Studio_v2.1.exe
           if-no-files-found: error
